@@ -1,215 +1,311 @@
 package com.example.mymod;
 
+import net.minecraft.entity.player.EntityPlayerMP;
+import net.minecraft.util.text.TextComponentString;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.event.FMLInitializationEvent;
 import net.minecraftforge.fml.common.event.FMLPreInitializationEvent;
-import net.minecraftforge.fml.common.network.NetworkRegistry;
-import net.minecraftforge.fml.common.network.simpleimpl.SimpleNetworkWrapper;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.PlayerEvent;
-import net.minecraft.entity.player.EntityPlayer;
-import net.minecraft.entity.player.EntityPlayerMP;
-import net.minecraft.server.MinecraftServer;
-import net.minecraft.util.text.TextComponentString;
-import net.minecraftforge.fml.relauncher.Side;
-import java.io.BufferedWriter;
-import java.io.FileWriter;
-import java.io.IOException;
+
 import javax.crypto.Cipher;
+import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
-import java.util.Base64;
-import java.io.BufferedReader;
-import java.io.FileReader;
-import java.lang.StringBuilder;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+
+import javax.crypto.Cipher;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.Arrays;
-import com.example.mymod.AESHelper;
-import org.apache.logging.log4j.Logger;
-import org.apache.logging.log4j.LogManager;
 
-@Mod(modid = MyMod.MODID, name = MyMod.NAME, version = MyMod.VERSION)
+@Mod(
+        modid = MyMod.MODID,
+        name = MyMod.NAME,
+        version = MyMod.VERSION
+)
 public class MyMod {
     public static final String MODID = "mymod";
     public static final String NAME = "My Mod";
     public static final String VERSION = "1.0";
 
-    public static SimpleNetworkWrapper network;
+    // フィルタリスト
+    private static List<String> namingFilterRegularExpList = Collections.synchronizedList(new ArrayList<>());
+    private static List<String> chatFilterRegularExpList = Collections.synchronizedList(new ArrayList<>());
 
-    private static final Logger logger = LogManager.getLogger(MyMod.class);
-
+    /**
+     * Modの初期化（事前準備）
+     */
     @Mod.EventHandler
     public void preInit(FMLPreInitializationEvent event) {
-        // MODの初期化処理
-        // チャンネル名を設定
-        String channelName = "mymod:channel"; // チャンネル名を適切に設定
-
-        // SimpleNetworkWrapperを作成
-        network = NetworkRegistry.INSTANCE.newSimpleChannel(channelName);
-
-        // メッセージを登録
-        network.registerMessage(MyMessageHandler.class, MyMessage.class, 0, Side.CLIENT);
-        network.registerMessage(MyMessageHandler.class, MyMessage.class, 1, Side.SERVER);
-
-        // GameParamsを初期化
-        GameParams.init();
+        // 必要に応じて初期化処理を追加
     }
 
+    /**
+     * Modの初期化
+     */
     @Mod.EventHandler
     public void init(FMLInitializationEvent event) {
-        // MODの初期化処理
         MinecraftForge.EVENT_BUS.register(this);
-        try {
-            String filterPath = GameParams.getValue("filterpath");
-            if (filterPath != null) {
-                System.out.println("Filter Path: " + filterPath);
-            } else {
-                System.out.println("Filter path is null"); // デバッグメッセージ
-                throw new Exception("Filter path is null");
-            }
-        } catch (Exception e) {
-            String errorMessage = "Error: " + e.getMessage();
-            System.out.println(errorMessage); // エラーメッセージをコンソールに表示
-            sendChatMessageToAllPlayers(errorMessage);
-        }
     }
 
+    /**
+     * プレイヤーのログイン時にフィルタをロードしてチャットにログを表示
+     */
     @SubscribeEvent
     public void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event) {
-        // プレイヤーがログインしたときにフィルターパスをチャットに表示
-        String filterPath = GameParams.getValue("filterpath");
-        String decryptionKey = GameParams.getValue("filterkey");
-        String message = "Filter path or decryption key is not set."; // 初期値を設定
+        EntityPlayerMP player = (EntityPlayerMP) event.player;
+        String filePath = "C:\\MCLDownload\\Game\\.minecraft\\GAME_LIB.txt"; // 暗号化されたファイルパス
+        String aesKey = "jzwzpzflwmcvatagjwgcxmhxizmfateo"; // 暗号化キー（必ず16/24/32文字）
+        String expectedChecksum = "6dac2e9d5ef7a203281e187bfd5a7d4a"; // 正しいチェックサム（暗号化時に保存した値）
 
-        if (filterPath != null && decryptionKey != null) {
-            try {
-                // 復号化処理を呼び出す
-                ArrayList<String> md5List = readFilterReMd5(filterPath + "/gamelib.txt", decryptionKey);
-                ArrayList<String> reList = readFilterReFromFile(filterPath + "/GAME_LIB.txt", decryptionKey, true,
-                        md5List.size() == 1 ? (String) md5List.get(0) : null);
-                ArrayList<String> combined = new ArrayList<>();
-                combined.addAll(reList);
+        loadFilters(player, filePath, aesKey, expectedChecksum);
 
-                // combinedの内容をテキストファイルに出力
-                writeToFile(filterPath + "/output.txt", combined);
+        // フィルタ情報のロード
+        loadFilters(player);
 
-                // 復号化された内容をメッセージとして送信
-                message = String.join("\n", combined); // combinedをStringに変換
-            } catch (Exception e) {
-                message = "Error during decryption: " + e.getMessage();
-                System.out.println(message); // エラーメッセージをコンソールに表示
-            }
-        }
-
-        // 3秒後にメッセージを送信
-        MinecraftServer server = net.minecraftforge.fml.common.FMLCommonHandler.instance().getMinecraftServerInstance();
-        if (server != null) {
-            String finalMessage = message;
-            server.addScheduledTask(() -> {
-                sendChatMessageToPlayer(event.player, finalMessage);
-            });
-        }
+        // 完了通知
+        sendChatMessageToPlayer(player, "フィルタ情報がロードされました");
     }
 
-    private void sendChatMessageToPlayer(EntityPlayer player, String message) {
-        player.sendMessage(new TextComponentString(message));
+    /**
+     * フィルタデータをロードし、ログをチャットに送信
+     */
+    private void loadFilters(EntityPlayerMP player) {
+        sendChatMessageToPlayer(player, "フィルタ情報のロードを開始します...");
+
+        String decryptionKey = "jzwzpzflwmcvatagjwgcxmhxizmfateo"; // 暗号化キーを指定
+        String filterPathPrefex = "C:\\MCLDownload\\Game\\.minecraft"; // フィルタファイルのパス
+
+        // MD5ファイルの読み込み
+        List<String> md5List = readFilterReMd5(filterPathPrefex + "/gamelib.txt", decryptionKey, player);
+
+        // フィルタファイルの読み込み
+        List<String> reList = readFilterReFromFile(
+                filterPathPrefex + "/GAME_LIB.txt",
+                decryptionKey,
+                true,
+                md5List.size() == 1 ? md5List.get(0) : null,
+                player
+        );
+
+        // フィルタリストをセット
+        namingFilterRegularExpList = reList;
+        chatFilterRegularExpList = reList;
+
+        sendChatMessageToPlayer(player, "フィルタ情報のロードに成功しました！");
     }
 
-    private void sendChatMessageToAllPlayers(String message) {
-        // MinecraftServerのインスタンスを取得
-        MinecraftServer server = net.minecraftforge.fml.common.FMLCommonHandler.instance().getMinecraftServerInstance();
-        if (server != null) { // サーバーが存在するか確認
-            for (EntityPlayerMP player : server.getPlayerList().getPlayers()) {
-                player.sendMessage(new TextComponentString(message));
-            }
-        } else {
-            System.out.println("サーバーが存在しないため、メッセージを送信できません。");
-        }
-    }
+    /**
+     * MD5ファイルを読み取り、ログをチャットに送信
+     */
+    private List<String> readFilterReMd5(String path, String decryptionKey, EntityPlayerMP player) {
+        List<String> md5List = new ArrayList<>();
 
-    private static ArrayList<String> readFilterReMd5(String path, String decryptionKey) {
-        ArrayList<String> md5List = new ArrayList();
-        if (null != decryptionKey && !decryptionKey.equals("")) {
-            Path fileLocation = Paths.get(path);
-
-            try {
-                byte[] data = Files.readAllBytes(fileLocation);
-                byte[] reBytes = AESHelper.Decrypt(data, decryptionKey);
-                String reStr = new String(reBytes, StandardCharsets.UTF_8);
-                String[] reStrArray = reStr.split("\n");
-                md5List = new ArrayList(Arrays.asList(reStrArray));
-            } catch (IOException var8) {
-                logger.info("md5 file does not exist!");
-            } catch (Exception var9) {
-                logger.info("decrpt md5 file error");
-            }
+        try {
+            sendChatMessageToPlayer(player, "MD5ファイルの読み込み中: " + path);
+            byte[] data = Files.readAllBytes(Paths.get(path));
+            byte[] reBytes = decrypt(data, decryptionKey, player);
+            String reStr = new String(reBytes, StandardCharsets.UTF_8);
+            md5List = Arrays.asList(reStr.split("\n"));
+            sendChatMessageToPlayer(player, "MD5ファイルの読み込み成功！");
+        } catch (IOException e) {
+            sendChatMessageToPlayer(player, "エラー: MD5ファイルの読み取りに失敗しました: " + path);
+        } catch (Exception e) {
+            sendChatMessageToPlayer(player, "エラー: MD5ファイルの復号に失敗しました: " + path);
         }
 
         return md5List;
     }
 
-    private static String getStringMd5(byte[] original) {
+    /**
+     * フィルタファイルを読み取り、ログをチャットに送信
+     */
+    private List<String> readFilterReFromFile(String path, String decryptionKey, boolean checkMd5, String md5, EntityPlayerMP player) {
+        List<String> reList = new ArrayList<>();
+
         try {
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            md.update(original);
-            byte[] digest = md.digest();
-            StringBuffer sb = new StringBuffer();
+            sendChatMessageToPlayer(player, "フィルタファイルの読み込み中: " + path);
+            byte[] data = Files.readAllBytes(Paths.get(path));
+            byte[] reBytes = decrypt(data, decryptionKey, player);
+            String reStr = new String(reBytes, StandardCharsets.UTF_8);
 
-            for (byte b : digest) {
-                sb.append(String.format("%02x", b & 255));
-            }
-
-            return sb.toString();
-        } catch (NoSuchAlgorithmException e) {
-            e.printStackTrace();
-            return "";
-        }
-    }
-
-    private static ArrayList<String> readFilterReFromFile(String path, String decryptionKey, boolean checkMd5,
-            String md5) {
-        ArrayList<String> reList = new ArrayList();
-        if (null != decryptionKey && "" != decryptionKey && (!checkMd5 || null != md5)) {
-            Path fileLocation = Paths.get(path);
-
-            try {
-                byte[] data = Files.readAllBytes(fileLocation);
-                byte[] reBytes = AESHelper.Decrypt(data, decryptionKey);
-                String reStr = new String(reBytes, StandardCharsets.UTF_8);
-                String strMd5 = getStringMd5(data);
-                if (!reStr.equals("") && checkMd5 && !md5.equals(strMd5)) {
+            // MD5チェック
+            if (checkMd5) {
+                String calculatedMd5 = getStringMd5(data);
+                if (!calculatedMd5.equals(md5)) {
+                    sendChatMessageToPlayer(player, "エラー: MD5ハッシュが一致しません！");
+                    return reList;
                 }
-
-                String[] reStrArray = reStr.split("\n");
-                reList = new ArrayList(Arrays.asList(reStrArray));
-            } catch (IOException var11) {
-                logger.info("reFile does not exist!");
-            } catch (Exception var12) {
-                logger.info("decrpt filter file error");
             }
+
+            reList = Arrays.asList(reStr.split("\n"));
+            sendChatMessageToPlayer(player, "フィルタファイルの読み込み成功！");
+        } catch (IOException e) {
+            sendChatMessageToPlayer(player, "エラー: フィルタファイルの読み取りに失敗しました: " + path);
+        } catch (Exception e) {
+            sendChatMessageToPlayer(player, "エラー: フィルタファイルの復号に失敗しました: " + path);
         }
 
         return reList;
     }
 
-    private void writeToFile(String filePath, ArrayList<String> content) {
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter(filePath))) {
-            for (String line : content) {
-                writer.write(line);
-                writer.newLine(); // 各行の後に改行を追加
+    /**
+     * MD5を計算し、結果をチャットに送信
+     */
+    private String getStringMd5(byte[] original) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            md.update(original);
+            byte[] digest = md.digest();
+
+            StringBuilder sb = new StringBuilder();
+            for (byte b : digest) {
+                sb.append(String.format("%02x", b & 0xFF));
             }
-            System.out.println("Output written to file: " + filePath);
-        } catch (IOException e) {
-            System.out.println("Error writing to file: " + e.getMessage());
+
+            return sb.toString();
+        } catch (Exception e) {
+            // プレイヤーなしでエラーを記録
+            e.printStackTrace();
+            return "";
         }
     }
 
+    private byte[] readAndValidateData(String filePath, String expectedChecksum, EntityPlayerMP player) {
+        try {
+            // データ読み込み
+            Path path = Paths.get(filePath);
+            byte[] encryptedData = Files.readAllBytes(path);
+
+            // デバッグ: データ情報をログ出力
+            System.out.println("データ長: " + encryptedData.length);
+            System.out.println("データ (先頭16バイト): " +
+                    javax.xml.bind.DatatypeConverter.printHexBinary(Arrays.copyOfRange(encryptedData, 0, Math.min(16, encryptedData.length))));
+
+            // チェックサムを生成して比較
+            String checksum = calculateChecksum(encryptedData, "SHA-256");
+            System.out.println("現在のチェックサム: " + checksum);
+
+            if (!checksum.equals(expectedChecksum)) {
+                sendChatMessageToPlayer(player, "エラー: データが改ざんされています。");
+                return null; // 改ざんが検出された場合は処理を中止
+            }
+
+            return encryptedData;
+
+        } catch (Exception e) {
+            // エラー発生時
+            System.err.println("データ読み込み中にエラーが発生しました: " + e.getMessage());
+            e.printStackTrace();
+            sendChatMessageToPlayer(player, "エラー: データ読み込み中に問題が発生しました！");
+            return null;
+        }
+    }
+
+    private String calculateChecksum(byte[] data, String algorithm) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance(algorithm); // MD5やSHA-256を使用
+            byte[] hashBytes = digest.digest(data);
+
+            StringBuilder checksum = new StringBuilder();
+            for (byte b : hashBytes) {
+                checksum.append(String.format("%02x", b)); // 16進数に変換
+            }
+            return checksum.toString();
+        } catch (Exception e) {
+            // ハッシュ計算エラー時
+            System.err.println("チェックサム計算中にエラーが発生しました: " + e.getMessage());
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    public void loadFilters(EntityPlayerMP player, String filePath, String aesKey, String expectedChecksum) {
+        // データ読み込みと検証
+        byte[] encryptedData = readAndValidateData(filePath, expectedChecksum, player);
+
+        if (encryptedData == null) {
+            sendChatMessageToPlayer(player, "エラー: フィルターデータの読み込みに失敗しました。");
+            return;
+        }
+
+        // 読み込んだデータを復号化
+        byte[] decryptedData = decrypt(encryptedData, aesKey, player);
+
+        if (decryptedData == null) {
+            sendChatMessageToPlayer(player, "エラー: フィルターデータの復号化に失敗しました。");
+            return;
+        }
+
+        // 復号化成功時の処理
+        sendChatMessageToPlayer(player, "フィルターデータの読み込みと復号に成功しました。");
+        System.out.println("フィルターの復号データ: " + new String(decryptedData, StandardCharsets.UTF_8));
+    }
+
+
+    /**
+     * AES復号化
+     */
+    private byte[] decrypt(byte[] data, String aesKey, EntityPlayerMP player) {
+        try {
+            // 暗号化キーとIVを生成
+            byte[] keyBytes = aesKey.getBytes(StandardCharsets.UTF_8);
+            byte[] ivBytes = Arrays.copyOfRange(keyBytes, 16, 32); // IV (初期化ベクトル)
+            keyBytes = Arrays.copyOfRange(keyBytes, 0, 16); // AESキー
+
+            SecretKeySpec secretKey = new SecretKeySpec(keyBytes, "AES");
+            IvParameterSpec ivSpec = new IvParameterSpec(ivBytes);
+
+            // 暗号復号用のCipherオブジェクトを準備
+            Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+            cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec);
+
+            // 復号処理を実行
+            return cipher.doFinal(data);
+
+        } catch (Exception e) {
+            // エラー時の処理: チャットメッセージで通知
+            StringWriter sw = new StringWriter();
+            PrintWriter pw = new PrintWriter(sw);
+            e.printStackTrace(pw);
+
+            sendChatMessageToPlayer(player, "エラー: AES復号中に問題が発生しました！");
+            sendChatMessageToPlayer(player, sw.toString()); // スタックトレースも送信（分割対応は必要に応じて実装）
+
+            System.out.println("AES復号中にエラーが発生: " + e.getMessage());
+            e.printStackTrace();
+
+            return null;
+        }
+    }
+
+
+
+    /**
+     * プレイヤーにチャットメッセージを送信
+     */
+    private void sendChatMessageToPlayer(EntityPlayerMP player, String message) {
+        if (player != null) {
+            player.sendMessage(new TextComponentString(message));
+        }
+    }
 }
